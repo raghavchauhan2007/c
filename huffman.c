@@ -1,18 +1,18 @@
 /*
-HUFF2412 File Format Specification (Encoder v1)
+HUFF2412 File Format Specification (Encoder v1 / Decoder v1)
 
 Overview
 --------
-This program writes a Huffman-compressed output file. The output is divided into:
+This program writes and reads a Huffman-compressed file format. The output file is:
 
-  [HEADER (byte-aligned parts + bit-packed tree)] [PAYLOAD (bit-packed codes)]
+  [HEADER (byte-aligned fields + bit-packed tree)] [PAYLOAD (bit-packed codes)]
 
-"Payload" = the compressed bitstream for the original file contents, written
-by replacing each input byte with its Huffman code bits.
+"Payload" = the compressed bitstream for the original file contents, produced by
+replacing each input byte with its Huffman code bits.
 
-All multi-byte integer fields are written using the platform's native in-memory
-representation (typically little-endian). For cross-platform portability,
-define and use an explicit byte order.
+IMPORTANT: Multi-byte integers are written using the platform's native in-memory
+representation (typically little-endian). This format is therefore NOT portable
+across architectures with different endianness unless an explicit byte order is used.
 
 Header Layout (in order)
 ------------------------
@@ -21,8 +21,8 @@ Header Layout (in order)
    Used to identify files produced by this compressor.
 
 2) Original Size (uint64_t, 8 bytes)
-   The exact number of bytes in the original uncompressed input file.
-   Decoder stops after producing this many bytes (ignores any padding bits).
+   Exact number of bytes in the original uncompressed input file.
+   Decoder MUST stop after producing exactly this many bytes (ignores any final padding).
 
 3) Stored Filename Length (uint16_t, 2 bytes)
    Length in bytes of the stored filename string.
@@ -31,36 +31,53 @@ Header Layout (in order)
    Raw bytes of the input file base name (includes extension), not NUL-terminated.
    Example: "photo.png" or "archive.tar.gz".
 
+   Decoder behavior:
+   - The decoder attempts to write output to this filename in the current directory.
+   - If the file already exists, the decoder prompts the user before overwriting.
+
 5) Tree Bit Length (uint32_t, 4 bytes)
    Number of bits used to encode the serialized Huffman tree that immediately follows.
+   This allows the decoder to know exactly where the tree ends and where the payload begins.
 
 6) Serialized Huffman Tree (treeBitsLen bits, bit-packed)
-   Preorder serialization:
-     - Leaf node: write bit 1, then write 8 bits of the leaf byte value.
-       (Total = 9 bits per leaf.)
-     - Internal node: write bit 0, then serialize left subtree, then right subtree.
-       (Total = 1 bit + left + right.)
+   Preorder serialization (MSB-first bit order within each byte):
+     - Leaf node:
+         write bit 1
+         then write 8 bits of the leaf byte value
+       Total = 9 bits per leaf.
+
+     - Internal node:
+         write bit 0
+         then serialize left subtree
+         then serialize right subtree
+       Total = 1 bit + left subtree bits + right subtree bits.
 
 7) Tree Padding (0..7 bits)
    After the tree bits are written, the encoder pads with 0 bits up to the next
    byte boundary so that the payload starts on a byte boundary.
+   Decoder should discard these padding bits by aligning to the next byte boundary.
 
 Payload Layout
 --------------
 8) Huffman Payload Bits (variable length, bit-packed)
-   For each byte read from the input file, write the corresponding Huffman code
-   bits from the code table.
+   For each input byte, the encoder writes the corresponding Huffman code bits
+   (from the code table built from the Huffman tree).
+   Bit order is MSB-first within output bytes, matching the BitWriter/BitReader.
 
 9) Final Padding (0..7 bits)
-   After all symbols are written, the encoder pads the last output byte with 0 bits
+   After encoding all symbols, the encoder pads the last output byte with 0 bits
    (if needed) and flushes it.
+   The decoder ignores any remaining padding bits because it stops after outputting
+   exactly Original Size bytes.
 
-Notes / Constraints
--------------------
+Notes / Constraints / Error Handling
+------------------------------------
 - Empty input files are currently rejected by the encoder.
 - Codes are limited to 64 bits in this implementation (ERR_RECURSION_DEPTH if exceeded).
-- The stored treeBitsLen allows a decoder to know exactly where the tree ends and
-  where the payload begins.
+- Decoder detects invalid/corrupt streams as ERR_FORMAT (bad magic, invalid tree encoding,
+  impossible traversal, mismatched treeBitsLen consumption, etc.).
+- I/O failures while reading return ERR_READ; I/O failures while writing return ERR_WRITE.
+- If the user declines overwrite when output already exists, the decoder returns ERR_ABORTED.
 */
 
 #include <stddef.h>
@@ -80,7 +97,10 @@ typedef enum {
     ERR_FILE,
     ERR_READ,
     ERR_HEAP_CAPACITY_FULL,
-    ERR_RECURSION_DEPTH
+    ERR_RECURSION_DEPTH,
+    ERR_WRITE,
+    ERR_FORMAT,
+    ERR_ABORTED
 } Status;
 
 /*========================= READ FILE ===========================*/
@@ -416,7 +436,7 @@ Status writeBits(BitWriter *bw, uint64_t bits, uint8_t length) {
         bw->bitCount++;
 
         if(bw->bitCount == 8) {
-            if(fwrite(&bw->buffer, 1, 1, bw->f) != 1) return ERR_FILE;
+            if(fwrite(&bw->buffer, 1, 1, bw->f) != 1) return ERR_WRITE;
 
             bw->buffer = 0;
             bw->bitCount = 0;
@@ -431,7 +451,7 @@ Status writePaddedBits(BitWriter *bw) {
     if(bw->bitCount == 0) return SUCCESS;
     bw->buffer = (uint8_t) (bw->buffer << (8-bw->bitCount));
 
-    if(fwrite(&bw->buffer, 1, 1, bw->f) != 1) return ERR_FILE;
+    if(fwrite(&bw->buffer, 1, 1, bw->f) != 1) return ERR_WRITE;
 
     bw->buffer = bw->bitCount = 0;
     return SUCCESS;
@@ -484,9 +504,9 @@ Status writeTree(const Node *root, BitWriter *bw) {
 Status writeHeader(BitWriter *bw, uint64_t originalSize, const Node *root, const char* inputPath) {
     const uint8_t magic[] = {'H', 'U', 'F', 'F', '2', '4', '1', '2'};
 
-    if(fwrite(magic, 1, 8, bw->f) != 8) return ERR_FILE;
+    if(fwrite(magic, 1, 8, bw->f) != 8) return ERR_WRITE;
 
-    if(fwrite(&originalSize, sizeof(originalSize), 1, bw->f) != 1) return ERR_FILE;
+    if(fwrite(&originalSize, sizeof(originalSize), 1, bw->f) != 1) return ERR_WRITE;
 
     const char *name = baseName(inputPath);
     size_t n = strlen(name);
@@ -494,16 +514,16 @@ Status writeHeader(BitWriter *bw, uint64_t originalSize, const Node *root, const
 
     uint16_t nameLen = (uint16_t) n;
 
-    if(fwrite(&nameLen, sizeof(nameLen), 1, bw->f) != 1) return ERR_FILE;
+    if(fwrite(&nameLen, sizeof(nameLen), 1, bw->f) != 1) return ERR_WRITE;
     if(nameLen > 0) {
-        if(fwrite(name, 1, nameLen, bw->f) != nameLen) return ERR_FILE;
+        if(fwrite(name, 1, nameLen, bw->f) != nameLen) return ERR_WRITE;
     }
 
     uint64_t treeBits64 = treeBitLength(root);
     if(treeBits64 > UINT32_MAX) return ERR_FILE;
 
     uint32_t treeBitsLen = (uint32_t) treeBits64;
-    if(fwrite(&treeBitsLen, sizeof(treeBitsLen), 1, bw->f) != 1) return ERR_FILE;
+    if(fwrite(&treeBitsLen, sizeof(treeBitsLen), 1, bw->f) != 1) return ERR_WRITE;
 
     Status s = writeTree(root, bw);
     if(s != SUCCESS) return s;
@@ -571,6 +591,226 @@ Status encodeFile(const char *inName, const char *outName, const Code *table, ui
         return s;
 }
 
+/*========================== HEADER READER =========================*/
+
+typedef struct {
+    uint64_t originalSize;
+    uint16_t nameLen;
+    char *name;
+    uint32_t treeBitsLen;
+} HuffHeader;
+
+void freeHeader(HuffHeader *h) {
+    if(!h) return;
+    free(h->name);
+    h->name = NULL;
+}
+
+Status readHeader(FILE *in, HuffHeader *h) {
+    memset(h, 0, sizeof(*h));
+
+    uint8_t magic[8];
+    const uint8_t magic_expected[] = {'H', 'U', 'F', 'F', '2', '4', '1', '2'};
+
+    if(fread(magic, 1, 8, in) != 8) return ERR_READ;
+    if(memcmp(magic, magic_expected, 8) != 0) return ERR_FORMAT;
+
+    if(fread(&h->originalSize, sizeof(h->originalSize), 1, in) != 1) return ERR_READ;
+    if(fread(&h->nameLen, sizeof(h->nameLen), 1, in) != 1) return ERR_READ;
+
+    h->name = (char*) malloc((size_t) h->nameLen + 1);
+    if(!h->name) return ERR_MEMORY;
+
+    if(h->nameLen > 0) {
+        if(fread(h->name, 1, h->nameLen, in) != h->nameLen) return ERR_READ;
+    }
+    h->name[h->nameLen] = '\0';
+
+    if(fread(&h->treeBitsLen, sizeof(h->treeBitsLen), 1, in) != 1) return ERR_READ;
+
+    return SUCCESS;
+}
+
+/*======================== BIT READER ========================*/
+
+typedef struct {
+    FILE *f;
+    uint8_t buffer;
+    uint8_t bitPos;
+} BitReader;
+
+void initBitReader(BitReader *br, FILE *f) {
+    br->f = f;
+    br->buffer = 0;
+    br->bitPos = 0;
+}
+
+Status readBit(BitReader *br, uint8_t *outBit) {
+    if(br->bitPos == 0) {
+        if(fread(&br->buffer, 1, 1, br->f) != 1) return ERR_READ;
+        br->bitPos = 8;
+    }
+
+    *outBit = (br->buffer >> (br->bitPos - 1)) & 1;
+    br->bitPos--;
+    return SUCCESS;
+}
+
+Status readBitsU64(BitReader *br, uint32_t bitCount, uint64_t *outValue) {
+    uint64_t value = 0;
+    
+    for(uint32_t bitIdx = 0; bitIdx < bitCount; bitIdx++) {
+        uint8_t bit = 0;
+
+        Status s = readBit(br, &bit);
+        if(s != SUCCESS) return s;
+
+        value = (value << 1) | (uint64_t) bit;
+    }
+
+    *outValue = value;
+    return SUCCESS;
+}
+
+// discard remaining bits in current byte
+void alignToByte(BitReader *br) {
+    br->bitPos = 0;
+}
+
+/*
+Reads a Huffman tree in the same preorder bit format as writeTree(), but enforces
+a hard limit: it will consume exactly treeBitsLen bits overall.
+
+bitsLeft:
+  input  = how many tree bits remain to be read
+  output = decremented as bits are consumed; should reach 0 when tree is fully read
+*/
+
+Status readTree(BitReader *br, uint32_t *bitsLeft, Node **outNode) {
+    *outNode = NULL;
+
+    if(!bitsLeft || !*bitsLeft) return ERR_FORMAT;
+
+    uint8_t tag;
+    Status s = readBit(br, &tag);
+    if(s != SUCCESS) return s;
+    (*bitsLeft)--;
+
+    if(tag == 1) {
+        // leaf: next 8 bits are byte value
+        if(*bitsLeft < 8) return ERR_FORMAT;
+
+        uint64_t byte = 0;
+        s = readBitsU64(br, 8, &byte);
+        if(s != SUCCESS) return s;
+        (*bitsLeft) -= 8;
+
+        s = createNode(outNode, (uint8_t) byte, 0, NULL, NULL);
+        if(s != SUCCESS) return s;
+
+        return SUCCESS;
+    }
+
+    // internal: read left subtree thn right subtree
+    Node *left = NULL;
+    Node *right = NULL;
+
+    s = readTree(br, bitsLeft, &left);
+    if(s != SUCCESS) {
+        freeTree(&left);
+        return s;
+    }
+
+    s = readTree(br, bitsLeft, &right);
+    if(s != SUCCESS) {
+        freeTree(&left);
+        freeTree(&right);
+        return s;
+    }
+    
+    s = createNode(outNode, 0, 0, left, right);
+    if(s != SUCCESS) {
+        freeTree(&left);
+        freeTree(&right);
+        return s;
+    }
+
+    return SUCCESS;
+}
+
+/*======================== DECODER ==========================*/
+
+Status flushBuffer(FILE *out, uint8_t *buffer, size_t *count) {
+    if(*count == 0) return SUCCESS;
+
+    if(fwrite(buffer, 1, *count, out) != *count) return ERR_WRITE;
+    *count = 0;
+    return SUCCESS;
+}
+
+Status decodePayload(BitReader *br, FILE *out, const Node *root, uint64_t originalSize) {
+    if(!root) return ERR_FORMAT;
+
+    Status s = SUCCESS;
+    uint8_t *buffer = NULL;
+    size_t outCount = 0;
+
+    buffer = (uint8_t*) malloc(BUFFER_SIZE);
+    if(!buffer) return ERR_MEMORY;
+
+    // special case: single byte
+    if(!root->left && !root->right) {
+        for(uint64_t i=0; i<originalSize; i++) {
+            buffer[outCount++] = root->byte;
+            
+            if(outCount == BUFFER_SIZE) {
+                s = flushBuffer(out, buffer, &outCount);
+                if(s !=SUCCESS) goto cleanup;
+            }
+        }
+        
+        s = flushBuffer(out, buffer, &outCount);
+        if(s !=SUCCESS) goto cleanup;
+        
+        s = SUCCESS;
+        goto cleanup;
+    }
+    
+    uint64_t written = 0;
+    const Node *curr = root;
+    
+    while(written < originalSize) {
+        uint8_t bit = 0;
+        
+        s = readBit(br, &bit);
+        if(s != SUCCESS) goto cleanup;
+        
+        curr = bit ? curr->right : curr->left;
+        if(!curr) {
+            s = ERR_FORMAT;
+            goto cleanup;
+        }
+        
+        if(!curr->left && ! curr->right) {
+            buffer[outCount++] = curr->byte;
+            written++;
+            curr = root;
+            
+            if(outCount == BUFFER_SIZE) {
+                s = flushBuffer(out, buffer, &outCount);
+                if(s != SUCCESS) goto cleanup;
+            }
+        }
+    }
+    
+    s = flushBuffer(out, buffer, &outCount);
+    if(s !=SUCCESS) goto cleanup;
+
+    cleanup:
+        free(buffer);
+        return s;
+}
+
 /*======================== UTILITIES ========================*/
 
 void cleanupAll(uint64_t *freq, MinHeap *h, Node *root, Code *table, char *outName) {
@@ -632,7 +872,19 @@ void printStatus(const char *testName, Status s) {
         case ERR_HEAP_CAPACITY_FULL:
         fprintf(stderr, "[ERR_HEAP_CAPACITY_FULL]\n");
         break;
-        }
+        
+        case ERR_WRITE:
+        fprintf(stderr, "[ERR_WRITE]\n");
+        break;
+        
+        case ERR_FORMAT:
+        fprintf(stderr, "[ERR_FORMAT]\n");
+        break;
+
+        case ERR_ABORTED:
+        fprintf(stderr, "[ERR_ABORTED]\n");
+        break;
+    }
 }
 
 Status makeOutputName(char **outName, const char *inputPath) {
@@ -654,7 +906,7 @@ Status makeOutputName(char **outName, const char *inputPath) {
     return SUCCESS;
 }
 
-/*====================CMDLINE ARGS PARSING ======================*/
+/*==================== CMDLINE ARGS PARSING ======================*/
 
 typedef enum {
     NONE,
@@ -683,6 +935,140 @@ Status parseArgs(int argc, char **argv, Mode *mode, const char **inputPath) {
     return ERR_FILE;
 }
 
+char fileExists(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if(f) {
+        fclose(f);
+        return 1;
+    }
+
+    return 0;
+}
+
+int promptOverwrite(const char *path) {
+    fprintf(stderr, "File '%s' already exists. Overwrite? [y/N]: ", path);
+    fflush(stderr);
+
+    int c = getchar();
+    while(c != '\n' && c != EOF) {
+        int d = getchar();
+        if(d == '\n' || d == EOF) break;
+    }
+
+    return (c == 'y' || c == 'Y');
+}
+
+/*=================== HIGH-LEVEL FILE OPS ===================*/
+
+Status compressFile(const char *inputPath) {
+    Status s = SUCCESS;
+
+    uint64_t *freq = NULL;
+    MinHeap *heap = NULL;
+    Node *root = NULL;
+    uint64_t totalBytes = 0;
+    Code *table = NULL;
+    char *outName = NULL;
+
+    s = readFile(inputPath, &freq, &totalBytes);
+    if(s != SUCCESS) goto cleanup;
+
+    if(totalBytes == 0) {
+        s = ERR_FILE; // or ERR_FORMAT if you prefer
+        goto cleanup;
+    }
+
+    s = buildHeap(&heap, freq);
+    if(s != SUCCESS) goto cleanup;
+
+    s = buildHuffmanTree(heap, &root);
+    if(s != SUCCESS) goto cleanup;
+
+    s = initTable(&table);
+    if(s != SUCCESS) goto cleanup;
+
+    s = buildCodes(root, table, 0, 0);
+    if(s != SUCCESS) goto cleanup;
+
+    s = makeOutputName(&outName, inputPath);
+    if(s != SUCCESS) goto cleanup;
+
+    s = encodeFile(inputPath, outName, table, totalBytes, root);
+    if(s != SUCCESS) goto cleanup;
+
+    printf("Original File Size: %" PRIu64 " Bytes\n", totalBytes);
+    printf("Wrote Compressed File: %s\n", outName);
+
+    cleanup:
+        cleanupAll(freq, heap, root, table, outName);
+        return s;
+}
+
+Status decodeFile(const char *inHuffPath) {
+    Status s = SUCCESS;
+    FILE *in = NULL;
+    FILE *out = NULL;
+
+    HuffHeader header;
+    memset(&header, 0, sizeof(header));
+    
+    Node *root = NULL;
+
+    in = fopen(inHuffPath, "rb");
+    if(!in) {
+        s = ERR_FILE;
+        goto cleanup;
+    }
+
+    s = readHeader(in, &header);
+    if(s != SUCCESS) goto cleanup;
+
+    if(header.treeBitsLen == 0) {
+        s = ERR_FORMAT;
+        goto cleanup;
+    }
+
+    if(fileExists(header.name)) {
+        if(!promptOverwrite(header.name)) {
+            s = ERR_ABORTED;
+            goto cleanup;
+        }
+    }
+
+    out = fopen(header.name, "wb");
+    if(!out) {
+        s = ERR_FILE;
+        goto cleanup;
+    }
+
+    BitReader br;
+    initBitReader(&br, in);
+
+    uint32_t bitsLeft = header.treeBitsLen;
+    s = readTree(&br, &bitsLeft, &root);
+    if(s != SUCCESS) goto cleanup;
+
+    if(bitsLeft != 0) {
+        s = ERR_FORMAT;
+        goto cleanup;
+    }
+
+    alignToByte(&br);
+
+    s = decodePayload(&br, out, root, header.originalSize);
+    if(s != SUCCESS) goto cleanup;
+
+    printf("Original File Size: %" PRIu64 " Bytes\n", header.originalSize);
+    printf("Wrote Decoded File: %s\n", header.name);
+
+    cleanup:
+        if(out) fclose(out);
+        if(in) fclose(in);
+        freeTree(&root);
+        freeHeader(&header);
+        return s;
+}
+
 /*============================ MAIN ============================*/
 
 int main(int argc, char **argv) {
@@ -698,54 +1084,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if(mode == COMPRESS) {
-        uint64_t *freq = NULL;
-        MinHeap *heap = NULL;
-        Node *root = NULL;
-        uint64_t totalBytes = 0;
-        Code *table = NULL;
-        char *outName = NULL;
+    if(mode == COMPRESS) s = compressFile(inputPath);
+    else s = decodeFile(inputPath);
 
-        s = readFile(inputPath, &freq, &totalBytes);
-        if(s != SUCCESS) goto cleanup;
-
-        if(totalBytes == 0) {
-            s = ERR_FILE;
-            goto cleanup;
-        }
-        
-        s = buildHeap(&heap, freq);
-        if(s != SUCCESS) goto cleanup;
-        
-        s = buildHuffmanTree(heap, &root);
-        if(s != SUCCESS) goto cleanup;
-
-        s = initTable(&table);
-        if(s != SUCCESS) goto cleanup;
-        
-        s = buildCodes(root, table, 0, 0);
-        if(s != SUCCESS) goto cleanup;
-
-        s = makeOutputName(&outName, inputPath);
-        if(s != SUCCESS) goto cleanup;
-        
-        s = encodeFile(inputPath, outName, table, totalBytes, root);
-        if(s != SUCCESS) goto cleanup;
-
-        printf("Original File Size: %" PRIu64 " Bytes\n", totalBytes);
-        printf("Wrote Compressed File: %s\n", outName);
-
-        cleanup:
-            if(s != SUCCESS) {
-                printStatus("ERROR", s);
-            }
-
-            cleanupAll(freq, heap, root, table, outName);
-            return (s == SUCCESS) ? 0 : 1;
+    if(s != SUCCESS) {
+        printStatus("ERROR", s);
     }
 
-    else {
-        // decoder
-        return 0;
-    }
+    return (s == SUCCESS) ? 0 : 1;
 }
