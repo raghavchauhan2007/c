@@ -1,0 +1,1325 @@
+\begin{MintedVerbatim}[commandchars=\\\{\}]
+\PYG{c+cm}{/*}
+\PYG{c+cm}{HUFF2412 File Format Specification (Encoder v1 / Decoder v1)}
+
+\PYG{c+cm}{Overview}
+\PYG{c+cm}{\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}}
+\PYG{c+cm}{This program writes and reads a Huffman\PYGZhy{}compressed file format. The output file is:}
+
+\PYG{c+cm}{  [HEADER (byte\PYGZhy{}aligned fields + bit\PYGZhy{}packed tree)] [PAYLOAD (bit\PYGZhy{}packed codes)]}
+
+\PYG{c+cm}{\PYGZdq{}Payload\PYGZdq{} = the compressed bitstream for the original file contents, produced by}
+\PYG{c+cm}{replacing each input byte with its Huffman code bits.}
+
+\PYG{c+cm}{IMPORTANT: Multi\PYGZhy{}byte integers are written using the platform\PYGZsq{}s native in\PYGZhy{}memory}
+\PYG{c+cm}{representation (typically little\PYGZhy{}endian). This format is therefore NOT portable}
+\PYG{c+cm}{across architectures with different endianness unless an explicit byte order is used.}
+
+\PYG{c+cm}{Header Layout (in order)}
+\PYG{c+cm}{\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}}
+\PYG{c+cm}{1) Magic (8 bytes)}
+\PYG{c+cm}{   ASCII bytes: \PYGZsq{}H\PYGZsq{} \PYGZsq{}U\PYGZsq{} \PYGZsq{}F\PYGZsq{} \PYGZsq{}F\PYGZsq{} \PYGZsq{}2\PYGZsq{} \PYGZsq{}4\PYGZsq{} \PYGZsq{}1\PYGZsq{} \PYGZsq{}2\PYGZsq{}}
+\PYG{c+cm}{   Used to identify files produced by this compressor.}
+
+\PYG{c+cm}{2) Original Size (uint64\PYGZus{}t, 8 bytes)}
+\PYG{c+cm}{   Exact number of bytes in the original uncompressed input file.}
+\PYG{c+cm}{   Decoder MUST stop after producing exactly this many bytes (ignores any final padding).}
+
+\PYG{c+cm}{3) Stored Filename Length (uint16\PYGZus{}t, 2 bytes)}
+\PYG{c+cm}{   Length in bytes of the stored filename string.}
+
+\PYG{c+cm}{4) Stored Filename (nameLen bytes)}
+\PYG{c+cm}{   Raw bytes of the input file base name (includes extension), not NUL\PYGZhy{}terminated.}
+\PYG{c+cm}{   Example: \PYGZdq{}photo.png\PYGZdq{} or \PYGZdq{}archive.tar.gz\PYGZdq{}.}
+
+\PYG{c+cm}{   Decoder behavior:}
+\PYG{c+cm}{   \PYGZhy{} The decoder attempts to write output to this filename in the current directory.}
+\PYG{c+cm}{   \PYGZhy{} If the file already exists, the decoder prompts the user before overwriting.}
+
+\PYG{c+cm}{5) Tree Bit Length (uint32\PYGZus{}t, 4 bytes)}
+\PYG{c+cm}{   Number of bits used to encode the serialized Huffman tree that immediately follows.}
+\PYG{c+cm}{   This allows the decoder to know exactly where the tree ends and where the payload begins.}
+
+\PYG{c+cm}{6) Serialized Huffman Tree (treeBitsLen bits, bit\PYGZhy{}packed)}
+\PYG{c+cm}{   Preorder serialization (MSB\PYGZhy{}first bit order within each byte):}
+\PYG{c+cm}{     \PYGZhy{} Leaf node:}
+\PYG{c+cm}{         write bit 1}
+\PYG{c+cm}{         then write 8 bits of the leaf byte value}
+\PYG{c+cm}{       Total = 9 bits per leaf.}
+
+\PYG{c+cm}{     \PYGZhy{} Internal node:}
+\PYG{c+cm}{         write bit 0}
+\PYG{c+cm}{         then serialize left subtree}
+\PYG{c+cm}{         then serialize right subtree}
+\PYG{c+cm}{       Total = 1 bit + left subtree bits + right subtree bits.}
+
+\PYG{c+cm}{7) Tree Padding (0..7 bits)}
+\PYG{c+cm}{   After the tree bits are written, the encoder pads with 0 bits up to the next}
+\PYG{c+cm}{   byte boundary so that the payload starts on a byte boundary.}
+\PYG{c+cm}{   Decoder should discard these padding bits by aligning to the next byte boundary.}
+
+\PYG{c+cm}{Payload Layout}
+\PYG{c+cm}{\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}}
+\PYG{c+cm}{8) Huffman Payload Bits (variable length, bit\PYGZhy{}packed)}
+\PYG{c+cm}{   For each input byte, the encoder writes the corresponding Huffman code bits}
+\PYG{c+cm}{   (from the code table built from the Huffman tree).}
+\PYG{c+cm}{   Bit order is MSB\PYGZhy{}first within output bytes, matching the BitWriter/BitReader.}
+
+\PYG{c+cm}{9) Final Padding (0..7 bits)}
+\PYG{c+cm}{   After encoding all symbols, the encoder pads the last output byte with 0 bits}
+\PYG{c+cm}{   (if needed) and flushes it.}
+\PYG{c+cm}{   The decoder ignores any remaining padding bits because it stops after outputting}
+\PYG{c+cm}{   exactly Original Size bytes.}
+
+\PYG{c+cm}{Notes / Constraints / Error Handling}
+\PYG{c+cm}{\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}\PYGZhy{}}
+\PYG{c+cm}{\PYGZhy{} Empty input files are currently rejected by the encoder.}
+\PYG{c+cm}{\PYGZhy{} Codes are limited to 64 bits in this implementation (ERR\PYGZus{}RECURSION\PYGZus{}DEPTH if exceeded).}
+\PYG{c+cm}{\PYGZhy{} Decoder detects invalid/corrupt streams as ERR\PYGZus{}FORMAT (bad magic, invalid tree encoding,}
+\PYG{c+cm}{  impossible traversal, mismatched treeBitsLen consumption, etc.).}
+\PYG{c+cm}{\PYGZhy{} I/O failures while reading return ERR\PYGZus{}READ; I/O failures while writing return ERR\PYGZus{}WRITE.}
+\PYG{c+cm}{\PYGZhy{} If the user declines overwrite when output already exists, the decoder returns ERR\PYGZus{}ABORTED.}
+\PYG{c+cm}{*/}
+
+\PYG{c+cp}{\PYGZsh{}include}\PYG{+w}{ }\PYG{c+cpf}{\PYGZlt{}stddef.h\PYGZgt{}}
+\PYG{c+cp}{\PYGZsh{}include}\PYG{+w}{ }\PYG{c+cpf}{\PYGZlt{}stdint.h\PYGZgt{}}
+\PYG{c+cp}{\PYGZsh{}include}\PYG{+w}{ }\PYG{c+cpf}{\PYGZlt{}stdio.h\PYGZgt{}}
+\PYG{c+cp}{\PYGZsh{}include}\PYG{+w}{ }\PYG{c+cpf}{\PYGZlt{}inttypes.h\PYGZgt{}}
+\PYG{c+cp}{\PYGZsh{}include}\PYG{+w}{ }\PYG{c+cpf}{\PYGZlt{}stdlib.h\PYGZgt{}}
+\PYG{c+cp}{\PYGZsh{}include}\PYG{+w}{ }\PYG{c+cpf}{\PYGZlt{}string.h\PYGZgt{}}
+\PYG{c+cp}{\PYGZsh{}include}\PYG{+w}{ }\PYG{c+cpf}{\PYGZlt{}limits.h\PYGZgt{}}
+
+\PYG{c+cp}{\PYGZsh{}define BUFFER\PYGZus{}SIZE 8192}
+\PYG{c+cp}{\PYGZsh{}define FREQ\PYGZus{}SIZE 256}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Enum for error handling}
+\PYG{c+cm}{ * */}
+
+\PYG{k}{typedef}\PYG{+w}{ }\PYG{k}{enum}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{SUCCESS}\PYG{p}{,}
+\PYG{+w}{    }\PYG{n}{ERR\PYGZus{}MEMORY}\PYG{p}{,}
+\PYG{+w}{    }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{,}
+\PYG{+w}{    }\PYG{n}{ERR\PYGZus{}READ}\PYG{p}{,}
+\PYG{+w}{    }\PYG{n}{ERR\PYGZus{}HEAP\PYGZus{}CAPACITY\PYGZus{}FULL}\PYG{p}{,}
+\PYG{+w}{    }\PYG{n}{ERR\PYGZus{}RECURSION\PYGZus{}DEPTH}\PYG{p}{,}
+\PYG{+w}{    }\PYG{n}{ERR\PYGZus{}WRITE}\PYG{p}{,}
+\PYG{+w}{    }\PYG{n}{ERR\PYGZus{}FORMAT}\PYG{p}{,}
+\PYG{+w}{    }\PYG{n}{ERR\PYGZus{}ABORTED}
+\PYG{p}{\PYGZcb{}}\PYG{+w}{ }\PYG{n}{Status}\PYG{p}{;}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Reads the input file and generates frequency table for the characters}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * @param filename file to be read}
+\PYG{c+cm}{ * @param freq pointer to freq table}
+\PYG{c+cm}{ * @param totalBytes pointer to variable totalbytes which stores the total bytes read here}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * @return SUCCESS if file was read, table was generated and function returned cleanly}
+\PYG{c+cm}{ * */}
+
+\PYG{c+cm}{/*========================= READ FILE ===========================*/}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{readFile}\PYG{p}{(}\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{o}{*}\PYG{+w}{ }\PYG{n}{filename}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{freq}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{totalBytes}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k+kt}{FILE}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{f}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{fopen}\PYG{p}{(}\PYG{n}{filename}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}rb\PYGZdq{}}\PYG{p}{);}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{freq}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{uint64\PYGZus{}t}\PYG{o}{*}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{calloc}\PYG{p}{(}\PYG{n}{FREQ\PYGZus{}SIZE}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{sizeof}\PYG{p}{(}\PYG{k+kt}{uint64\PYGZus{}t}\PYG{p}{));}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!*}\PYG{n}{freq}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{fclose}\PYG{p}{(}\PYG{n}{f}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}MEMORY}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{uint8\PYGZus{}t}\PYG{o}{*}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{malloc}\PYG{p}{(}\PYG{n}{BUFFER\PYGZus{}SIZE}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{buffer}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{free}\PYG{p}{(}\PYG{o}{*}\PYG{n}{freq}\PYG{p}{);}
+\PYG{+w}{        }\PYG{o}{*}\PYG{n}{freq}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{        }\PYG{n}{fclose}\PYG{p}{(}\PYG{n}{f}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}MEMORY}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{bytesRead}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{totalBytes}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{while}\PYG{p}{((}\PYG{n}{bytesRead}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{fread}\PYG{p}{(}\PYG{n}{buffer}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{BUFFER\PYGZus{}SIZE}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{f}\PYG{p}{))}\PYG{+w}{ }\PYG{o}{\PYGZgt{}}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{o}{*}\PYG{n}{totalBytes}\PYG{+w}{ }\PYG{o}{+=}\PYG{+w}{ }\PYG{n}{bytesRead}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k}{for}\PYG{p}{(}\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{=}\PYG{l+m+mi}{0}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{\PYGZlt{}}\PYG{n}{bytesRead}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{++}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{p}{(}\PYG{o}{*}\PYG{n}{freq}\PYG{p}{)[}\PYG{n}{buffer}\PYG{p}{[}\PYG{n}{i}\PYG{p}{]]}\PYG{o}{++}\PYG{p}{;}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{ferror}\PYG{p}{(}\PYG{n}{f}\PYG{p}{))}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{free}\PYG{p}{(}\PYG{o}{*}\PYG{n}{freq}\PYG{p}{);}
+\PYG{+w}{        }\PYG{o}{*}\PYG{n}{freq}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{        }\PYG{n}{free}\PYG{p}{(}\PYG{n}{buffer}\PYG{p}{);}
+\PYG{+w}{        }\PYG{n}{fclose}\PYG{p}{(}\PYG{n}{f}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}READ}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{free}\PYG{p}{(}\PYG{n}{buffer}\PYG{p}{);}
+\PYG{+w}{    }\PYG{n}{fclose}\PYG{p}{(}\PYG{n}{f}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*============================== NODE ===============================*/}
+
+\PYG{k}{typedef}\PYG{+w}{ }\PYG{k}{struct}\PYG{+w}{ }\PYG{n+nc}{Node}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{byte}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{freq}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{struct}\PYG{+w}{ }\PYG{n+nc}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{left}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{struct}\PYG{+w}{ }\PYG{n+nc}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{right}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}\PYG{+w}{ }\PYG{n}{Node}\PYG{p}{;}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Creates a newnode and updates it\PYGZsq{}s byte, freq, left and right fields}
+\PYG{c+cm}{ * with appropriate values}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{createNode}\PYG{p}{(}\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{newNode}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{byte}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{freq}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{left}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{right}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{newNode}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{Node}\PYG{o}{*}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{malloc}\PYG{p}{(}\PYG{k}{sizeof}\PYG{p}{(}\PYG{n}{Node}\PYG{p}{));}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!*}\PYG{n}{newNode}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}MEMORY}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{p}{(}\PYG{o}{*}\PYG{n}{newNode}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{byte}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{byte}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{(}\PYG{o}{*}\PYG{n}{newNode}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{freq}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{freq}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{(}\PYG{o}{*}\PYG{n}{newNode}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{left}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{left}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{(}\PYG{o}{*}\PYG{n}{newNode}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{right}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{right}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Frees the tree structure recursively}
+\PYG{c+cm}{ * */}
+
+\PYG{k+kt}{void}\PYG{+w}{ }\PYG{n+nf}{freeTree}\PYG{p}{(}\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{root}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{root}\PYG{+w}{ }\PYG{o}{||}\PYG{+w}{ }\PYG{o}{!*}\PYG{n}{root}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{p}{(}\PYG{o}{*}\PYG{n}{root}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{left}\PYG{p}{);}
+\PYG{+w}{    }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{p}{(}\PYG{o}{*}\PYG{n}{root}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{right}\PYG{p}{);}
+\PYG{+w}{    }\PYG{n}{free}\PYG{p}{(}\PYG{o}{*}\PYG{n}{root}\PYG{p}{);}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{root}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*============================== HEAP ===============================*/}
+
+\PYG{k}{typedef}\PYG{+w}{ }\PYG{k}{struct}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{arr}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{size}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{capacity}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}\PYG{+w}{ }\PYG{n}{MinHeap}\PYG{p}{;}
+
+\PYG{k+kt}{void}\PYG{+w}{ }\PYG{n+nf}{swap}\PYG{p}{(}\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{a}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{b}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{tmp}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{a}\PYG{p}{;}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{a}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{b}\PYG{p}{;}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{b}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{tmp}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Implements the heapify down algorithm recursively}
+\PYG{c+cm}{ * */}
+
+\PYG{k+kt}{void}\PYG{+w}{ }\PYG{n+nf}{heapifyDown}\PYG{p}{(}\PYG{n}{MinHeap}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{h}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{i}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{smallest}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{i}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{left}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{2}\PYG{o}{*}\PYG{n}{i}\PYG{+w}{ }\PYG{o}{+}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{right}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{2}\PYG{o}{*}\PYG{n}{i}\PYG{+w}{ }\PYG{o}{+}\PYG{+w}{ }\PYG{l+m+mi}{2}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{left}\PYG{+w}{ }\PYG{o}{\PYGZlt{}}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{+w}{ }\PYG{o}{\PYGZam{}\PYGZam{}}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{n}{left}\PYG{p}{]}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{freq}\PYG{+w}{ }\PYG{o}{\PYGZlt{}}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{n}{smallest}\PYG{p}{]}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{freq}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{smallest}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{left}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{right}\PYG{+w}{ }\PYG{o}{\PYGZlt{}}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{+w}{ }\PYG{o}{\PYGZam{}\PYGZam{}}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{n}{right}\PYG{p}{]}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{freq}\PYG{+w}{ }\PYG{o}{\PYGZlt{}}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{n}{smallest}\PYG{p}{]}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{freq}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{smallest}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{right}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{smallest}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{i}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{swap}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{n}{i}\PYG{p}{],}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{n}{smallest}\PYG{p}{]);}
+\PYG{+w}{        }\PYG{n}{heapifyDown}\PYG{p}{(}\PYG{n}{h}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{smallest}\PYG{p}{);}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Implements the heapify up algorithm recursively}
+\PYG{c+cm}{ * */}
+
+\PYG{k+kt}{void}\PYG{+w}{ }\PYG{n+nf}{heapifyUp}\PYG{p}{(}\PYG{n}{MinHeap}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{h}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{i}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{i}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{return}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{parent}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{i}\PYG{+w}{ }\PYG{o}{\PYGZhy{}}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{o}{/}\PYG{l+m+mi}{2}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{n}{i}\PYG{p}{]}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{freq}\PYG{+w}{ }\PYG{o}{\PYGZlt{}}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{n}{parent}\PYG{p}{]}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{freq}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{swap}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{n}{i}\PYG{p}{],}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{n}{parent}\PYG{p}{]);}
+\PYG{+w}{        }\PYG{n}{heapifyUp}\PYG{p}{(}\PYG{n}{h}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{parent}\PYG{p}{);}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Insert a node in the min heap and calls heapify up}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{heapInsert}\PYG{p}{(}\PYG{n}{MinHeap}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{h}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{node}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{+w}{ }\PYG{o}{\PYGZgt{}=}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{capacity}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}HEAP\PYGZus{}CAPACITY\PYGZus{}FULL}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{p}{]}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{node}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{heapifyUp}\PYG{p}{(}\PYG{n}{h}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{p}{);}
+\PYG{+w}{    }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{o}{++}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Extracts the root node from the heap and calls heapify down}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Node}\PYG{o}{*}\PYG{+w}{ }\PYG{n+nf}{extractMin}\PYG{p}{(}\PYG{n}{MinHeap}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{h}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{min}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{l+m+mi}{0}\PYG{p}{];}
+\PYG{+w}{    }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{l+m+mi}{0}\PYG{p}{]}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{l+m+mi}{\PYGZhy{}1}\PYG{p}{];}
+\PYG{+w}{    }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{o}{\PYGZhy{}\PYGZhy{}}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{heapifyDown}\PYG{p}{(}\PYG{n}{h}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{min}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Frees the heap structure}
+\PYG{c+cm}{ * */}
+
+\PYG{k+kt}{void}\PYG{+w}{ }\PYG{n+nf}{destroyHeapStruct}\PYG{p}{(}\PYG{n}{MinHeap}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{h}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{h}\PYG{+w}{ }\PYG{o}{||}\PYG{+w}{ }\PYG{o}{!*}\PYG{n}{h}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{free}\PYG{p}{((}\PYG{o}{*}\PYG{n}{h}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{);}
+\PYG{+w}{    }\PYG{n}{free}\PYG{p}{(}\PYG{o}{*}\PYG{n}{h}\PYG{p}{);}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{h}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Frees the heap structure along with all the nodes inside}
+\PYG{c+cm}{ * via calling freeTree()}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * It is to be used when tree is not formed and heap owns all the nodes}
+\PYG{c+cm}{ * */}
+
+\PYG{k+kt}{void}\PYG{+w}{ }\PYG{n+nf}{destroyHeapWithNodes}\PYG{p}{(}\PYG{n}{MinHeap}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{h}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{h}\PYG{+w}{ }\PYG{o}{||}\PYG{+w}{ }\PYG{o}{!*}\PYG{n}{h}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{((}\PYG{o}{*}\PYG{n}{h}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{for}\PYG{p}{(}\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{=}\PYG{l+m+mi}{0}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{\PYGZlt{}}\PYG{p}{(}\PYG{o}{*}\PYG{n}{h}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{++}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{p}{(}\PYG{o}{*}\PYG{n}{h}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{[}\PYG{n}{i}\PYG{p}{]);}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{free}\PYG{p}{((}\PYG{o}{*}\PYG{n}{h}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{);}
+\PYG{+w}{    }\PYG{n}{free}\PYG{p}{(}\PYG{o}{*}\PYG{n}{h}\PYG{p}{);}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{h}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*============================ BUILD HEAP ==============================*/}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Builds the heap structure using the freq table }
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{buildHeap}\PYG{p}{(}\PYG{n}{MinHeap}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{h}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{freq}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{h}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{status}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{h}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{MinHeap}\PYG{o}{*}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{malloc}\PYG{p}{(}\PYG{k}{sizeof}\PYG{p}{(}\PYG{n}{MinHeap}\PYG{p}{));}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!*}\PYG{n}{h}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}MEMORY}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{p}{(}\PYG{o}{*}\PYG{n}{h}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{capacity}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{FREQ\PYGZus{}SIZE}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{(}\PYG{o}{*}\PYG{n}{h}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{(}\PYG{o}{*}\PYG{n}{h}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{Node}\PYG{o}{**}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{malloc}\PYG{p}{((}\PYG{o}{*}\PYG{n}{h}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{capacity}\PYG{+w}{ }\PYG{o}{*}\PYG{+w}{ }\PYG{k}{sizeof}\PYG{p}{(}\PYG{n}{Node}\PYG{o}{*}\PYG{p}{));}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{p}{(}\PYG{o}{*}\PYG{n}{h}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{arr}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{free}\PYG{p}{(}\PYG{o}{*}\PYG{n}{h}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}MEMORY}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{for}\PYG{p}{(}\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{=}\PYG{l+m+mi}{0}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{\PYGZlt{}}\PYG{n}{FREQ\PYGZus{}SIZE}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{++}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{freq}\PYG{p}{[}\PYG{n}{i}\PYG{p}{]}\PYG{+w}{ }\PYG{o}{\PYGZgt{}}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{newNode}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+
+\PYG{+w}{            }\PYG{n}{status}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{createNode}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{newNode}\PYG{p}{,}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{uint8\PYGZus{}t}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{i}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{freq}\PYG{p}{[}\PYG{n}{i}\PYG{p}{],}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{,}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{);}
+\PYG{+w}{            }\PYG{k}{if}\PYG{p}{(}\PYG{n}{status}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{            }\PYG{n}{status}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{heapInsert}\PYG{p}{(}\PYG{o}{*}\PYG{n}{h}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{newNode}\PYG{p}{);}
+\PYG{+w}{            }\PYG{k}{if}\PYG{p}{(}\PYG{n}{status}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{                }\PYG{n}{free}\PYG{p}{(}\PYG{n}{newNode}\PYG{p}{);}
+\PYG{+w}{                }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{            }\PYG{p}{\PYGZcb{}}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n+nl}{cleanup}\PYG{p}{:}
+\PYG{+w}{        }\PYG{n}{destroyHeapWithNodes}\PYG{p}{(}\PYG{n}{h}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{status}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*======================= BUILD HUFFMAN TREE ==========================*/}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Builds the huffman tree using the minheap generated by buildHeap()}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{buildHuffmanTree}\PYG{p}{(}\PYG{n}{MinHeap}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{h}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{root}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{status}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{root}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{h}\PYG{+w}{ }\PYG{o}{||}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{while}\PYG{p}{(}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{+w}{ }\PYG{o}{\PYGZgt{}}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{a}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{extractMin}\PYG{p}{(}\PYG{n}{h}\PYG{p}{);}
+\PYG{+w}{        }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{b}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{extractMin}\PYG{p}{(}\PYG{n}{h}\PYG{p}{);}
+
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{a}\PYG{+w}{ }\PYG{o}{||}\PYG{+w}{ }\PYG{o}{!}\PYG{n}{b}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{a}\PYG{p}{);}
+\PYG{+w}{            }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{b}\PYG{p}{);}
+\PYG{+w}{            }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{        }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{merged}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{n}{status}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{createNode}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{merged}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{a}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{freq}\PYG{+w}{ }\PYG{o}{+}\PYG{+w}{ }\PYG{n}{b}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{freq}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{a}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{b}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{status}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{a}\PYG{p}{);}
+\PYG{+w}{            }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{b}\PYG{p}{);}
+\PYG{+w}{            }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{status}\PYG{p}{;}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{        }\PYG{n}{status}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{heapInsert}\PYG{p}{(}\PYG{n}{h}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{merged}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{status}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{merged}\PYG{p}{);}
+\PYG{+w}{            }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{status}\PYG{p}{;}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{root}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{extractMin}\PYG{p}{(}\PYG{n}{h}\PYG{p}{);}
+\PYG{+w}{    }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{size}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Recursively computes the number of bits used to store the tree in the header}
+\PYG{c+cm}{ * */}
+
+\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n+nf}{treeBitLength}\PYG{p}{(}\PYG{k}{const}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{root}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{root}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{left}\PYG{+w}{ }\PYG{o}{\PYGZam{}\PYGZam{}}\PYG{+w}{ }\PYG{o}{!}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{right}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{o}{+}\PYG{l+m+mi}{8}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{+w}{ }\PYG{o}{+}\PYG{+w}{ }\PYG{n}{treeBitLength}\PYG{p}{(}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{left}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{+}\PYG{+w}{ }\PYG{n}{treeBitLength}\PYG{p}{(}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{right}\PYG{p}{);}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*======================= GENERATE HUFFMAN CODES =========================*/}
+
+\PYG{k}{typedef}\PYG{+w}{ }\PYG{k}{struct}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{bits}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{length}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}\PYG{+w}{ }\PYG{n}{Code}\PYG{p}{;}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{initTable}\PYG{p}{(}\PYG{n}{Code}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{table}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{table}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{Code}\PYG{o}{*}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{calloc}\PYG{p}{(}\PYG{l+m+mi}{256}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{sizeof}\PYG{p}{(}\PYG{n}{Code}\PYG{p}{));}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!*}\PYG{n}{table}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}MEMORY}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Recursively builds the huffman codes for the characters in the frequency table}
+\PYG{c+cm}{ * via traversing the tree, assigning 0 when taking the left branch}
+\PYG{c+cm}{ * and 1 when taking the right branch}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * It handles the edge case in which a file may contain a single character by}
+\PYG{c+cm}{ * a single bit code of length 1}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * In this version characters whose bit pattern exceed 64 bits aren\PYGZsq{}t supported}
+\PYG{c+cm}{ * as uint64\PYGZus{}t is unsigned 64 bit integer which cannot store more than 64 bits}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{buildCodes}\PYG{p}{(}\PYG{k}{const}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{root}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{Code}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{table}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{code}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{depth}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{root}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{depth}\PYG{+w}{ }\PYG{o}{\PYGZgt{}=}\PYG{+w}{ }\PYG{l+m+mi}{64}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}RECURSION\PYGZus{}DEPTH}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{c+c1}{// LEAF}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{left}\PYG{+w}{ }\PYG{o}{\PYGZam{}\PYGZam{}}\PYG{+w}{ }\PYG{o}{!}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{right}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{c+c1}{// single symbol case}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{depth}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{n}{table}\PYG{p}{[}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{byte}\PYG{p}{].}\PYG{n}{bits}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{+w}{            }\PYG{n}{table}\PYG{p}{[}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{byte}\PYG{p}{].}\PYG{n}{length}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{;}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{        }\PYG{k}{else}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{n}{table}\PYG{p}{[}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{byte}\PYG{p}{].}\PYG{n}{bits}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{code}\PYG{p}{;}
+\PYG{+w}{            }\PYG{n}{table}\PYG{p}{[}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{byte}\PYG{p}{].}\PYG{n}{length}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{depth}\PYG{p}{;}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{c+c1}{// go left \PYGZhy{}\PYGZgt{} 0}
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{buildCodes}\PYG{p}{(}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{left}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{table}\PYG{p}{,}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{code}\PYG{+w}{ }\PYG{o}{\PYGZlt{}\PYGZlt{}}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{|}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{depth}\PYG{o}{+}\PYG{l+m+mi}{1}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{c+c1}{// go right \PYGZhy{}\PYGZgt{} 1}
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{buildCodes}\PYG{p}{(}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{right}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{table}\PYG{p}{,}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{code}\PYG{+w}{ }\PYG{o}{\PYGZlt{}\PYGZlt{}}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{|}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{depth}\PYG{o}{+}\PYG{l+m+mi}{1}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*===================== BIT WRITER AND UTILS =======================*/}
+
+\PYG{k}{typedef}\PYG{+w}{ }\PYG{k}{struct}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k+kt}{FILE}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{f}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{buffer}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{bitCount}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}\PYG{+w}{ }\PYG{n}{BitWriter}\PYG{p}{;}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Initializes BitWriter structure and opens the output file}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * buffer and bitcount are initialized to 0}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{initBitWriter}\PYG{p}{(}\PYG{n}{BitWriter}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{bw}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{filename}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{fopen}\PYG{p}{(}\PYG{n}{filename}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}wb\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{bitCount}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Writes the bits into buffer first and packs them into a byte}
+\PYG{c+cm}{ * Once the buffer is full of 8 bits it is flushed to the file}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * Bits are written in MSB first order}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{writeBits}\PYG{p}{(}\PYG{n}{BitWriter}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{bw}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{bits}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{length}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{for}\PYG{p}{(}\PYG{k+kt}{int}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{=}\PYG{n}{length}\PYG{l+m+mi}{\PYGZhy{}1}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{\PYGZgt{}=}\PYG{l+m+mi}{0}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{\PYGZhy{}\PYGZhy{}}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{bit}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{uint8\PYGZus{}t}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{((}\PYG{n}{bits}\PYG{+w}{ }\PYG{o}{\PYGZgt{}\PYGZgt{}}\PYG{+w}{ }\PYG{n}{i}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{);}
+
+\PYG{+w}{        }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{uint8\PYGZus{}t}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{((}\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{\PYGZlt{}\PYGZlt{}}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{|}\PYG{+w}{ }\PYG{n}{bit}\PYG{p}{);}
+\PYG{+w}{        }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{bitCount}\PYG{o}{++}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{bitCount}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{8}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fwrite}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{buffer}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}WRITE}\PYG{p}{;}
+
+\PYG{+w}{            }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{+w}{            }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{bitCount}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * At the end the file may have less than 8 bits}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * To handle this we write the bits following MSB first ordering}
+\PYG{c+cm}{ * and then pad the remaining bits to 0 and then flush to the file}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{writePaddedBits}\PYG{p}{(}\PYG{n}{BitWriter}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{bw}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{c+c1}{// pads leftover bits with 0s and writes them to file}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{bitCount}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{uint8\PYGZus{}t}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{\PYGZlt{}\PYGZlt{}}\PYG{+w}{ }\PYG{p}{(}\PYG{l+m+mi}{8}\PYG{o}{\PYGZhy{}}\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{bitCount}\PYG{p}{));}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fwrite}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{buffer}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}WRITE}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{bitCount}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{closeBitWriter}\PYG{p}{(}\PYG{n}{BitWriter}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{bw}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{bw}\PYG{+w}{ }\PYG{o}{||}\PYG{+w}{ }\PYG{o}{!}\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fclose}\PYG{p}{(}\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Utility function to extract the filename from full path}
+\PYG{c+cm}{ * */}
+
+\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{o}{*}\PYG{+w}{ }\PYG{n+nf}{baseName}\PYG{p}{(}\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{path}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{path}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}\PYGZdq{}}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{last}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{path}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{for}\PYG{p}{(}\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{p}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{path}\PYG{p}{;}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{p}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{p}\PYG{o}{++}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{o}{*}\PYG{n}{p}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}/\PYGZsq{}}\PYG{+w}{ }\PYG{o}{||}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{p}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}\PYGZbs{}\PYGZbs{}\PYGZsq{}}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{last}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{p}\PYG{+w}{ }\PYG{o}{+}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{last}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*========================= HEADER ============================*/}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Writes the huffman tree to the compressed file using preorder traversal}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * Internal nodes are written as 0 bit followed by the left subtree and the right subtree}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * Leaf nodes are written as 1 bit followed by 8 bit byte value}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{writeTree}\PYG{p}{(}\PYG{k}{const}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{root}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{BitWriter}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{bw}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{root}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{c+c1}{// leaf}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{left}\PYG{+w}{ }\PYG{o}{\PYGZam{}\PYGZam{}}\PYG{+w}{ }\PYG{o}{!}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{right}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{writeBits}\PYG{p}{(}\PYG{n}{bw}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{writeBits}\PYG{p}{(}\PYG{n}{bw}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{byte}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{8}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{c+c1}{// internal}
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{writeBits}\PYG{p}{(}\PYG{n}{bw}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{writeTree}\PYG{p}{(}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{left}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{bw}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{writeTree}\PYG{p}{(}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{right}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{bw}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Writes the header in the output file that will help the decoder}
+\PYG{c+cm}{ * to reconstruct the original bit pattern of the file}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * The function writes the following in the header:}
+\PYG{c+cm}{ *  MAGIC BYTES = \PYGZsq{}H\PYGZsq{},\PYGZsq{}U\PYGZsq{},\PYGZsq{}F\PYGZsq{},\PYGZsq{}F\PYGZsq{},\PYGZsq{}2\PYGZsq{},\PYGZsq{}4\PYGZsq{},\PYGZsq{}1\PYGZsq{},\PYGZsq{}2\PYGZsq{}}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ *  The original file size which helps the decoder to know after how many bytes it has to stop}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ *  Size of the orginal filename}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ *  The original filename which is given to the uncompressed file by the decoder}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ *  Length of the huffman tree which is embedded into the header}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ *  The huffman tree which is flattened into bits and then written in header}
+\PYG{c+cm}{ *  and will later be reconstructed by the decoder}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ *  Also any remaining bits are padded to zeroes so that there is no}
+\PYG{c+cm}{ *  ambiguity left for the decoder}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{writeHeader}\PYG{p}{(}\PYG{n}{BitWriter}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{bw}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{originalSize}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{const}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{root}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{o}{*}\PYG{+w}{ }\PYG{n}{inputPath}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{magic}\PYG{p}{[]}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{\PYGZob{}}\PYG{l+s+sc}{\PYGZsq{}H\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}U\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}F\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}F\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}2\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}4\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}1\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}2\PYGZsq{}}\PYG{p}{\PYGZcb{};}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fwrite}\PYG{p}{(}\PYG{n}{magic}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{8}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{8}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}WRITE}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fwrite}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{originalSize}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{sizeof}\PYG{p}{(}\PYG{n}{originalSize}\PYG{p}{),}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}WRITE}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{name}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{baseName}\PYG{p}{(}\PYG{n}{inputPath}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{n}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{strlen}\PYG{p}{(}\PYG{n}{name}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{n}\PYG{+w}{ }\PYG{o}{\PYGZgt{}}\PYG{+w}{ }\PYG{n}{UINT16\PYGZus{}MAX}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k+kt}{uint16\PYGZus{}t}\PYG{+w}{ }\PYG{n}{nameLen}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{uint16\PYGZus{}t}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{n}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fwrite}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{nameLen}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{sizeof}\PYG{p}{(}\PYG{n}{nameLen}\PYG{p}{),}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}WRITE}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{nameLen}\PYG{+w}{ }\PYG{o}{\PYGZgt{}}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fwrite}\PYG{p}{(}\PYG{n}{name}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{nameLen}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{nameLen}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}WRITE}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{treeBits64}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{treeBitLength}\PYG{p}{(}\PYG{n}{root}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{treeBits64}\PYG{+w}{ }\PYG{o}{\PYGZgt{}}\PYG{+w}{ }\PYG{n}{UINT32\PYGZus{}MAX}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k+kt}{uint32\PYGZus{}t}\PYG{+w}{ }\PYG{n}{treeBitsLen}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{uint32\PYGZus{}t}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{treeBits64}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fwrite}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{treeBitsLen}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{sizeof}\PYG{p}{(}\PYG{n}{treeBitsLen}\PYG{p}{),}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{bw}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}WRITE}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{writeTree}\PYG{p}{(}\PYG{n}{root}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{bw}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{writePaddedBits}\PYG{p}{(}\PYG{n}{bw}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*========================= ENCODER ===========================*/}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * First header is written in the output file}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * Then the input file is re\PYGZhy{}read in chunks of 8192 bytes and }
+\PYG{c+cm}{ * simultaneously output file is written bit by bit using the bitwriter}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * Then at last any remaining bits are padded with 0}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{encodeFile}\PYG{p}{(}\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{inName}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{outName}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{const}\PYG{+w}{ }\PYG{n}{Code}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{table}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{originalSize}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{const}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{root}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{FILE}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{in}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{BitWriter}\PYG{+w}{ }\PYG{n}{bw}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{\PYGZob{}}\PYG{l+m+mi}{0}\PYG{p}{\PYGZcb{};}
+
+\PYG{+w}{    }\PYG{n}{in}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{fopen}\PYG{p}{(}\PYG{n}{inName}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}rb\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{in}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{initBitWriter}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{bw}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{outName}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{uint8\PYGZus{}t}\PYG{o}{*}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{malloc}\PYG{p}{(}\PYG{n}{BUFFER\PYGZus{}SIZE}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{buffer}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}MEMORY}\PYG{p}{;}
+\PYG{+w}{        }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{writeHeader}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{bw}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{originalSize}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{root}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{inName}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{bytesRead}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{while}\PYG{p}{((}\PYG{n}{bytesRead}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{fread}\PYG{p}{(}\PYG{n}{buffer}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{BUFFER\PYGZus{}SIZE}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{in}\PYG{p}{))}\PYG{+w}{ }\PYG{o}{\PYGZgt{}}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{for}\PYG{p}{(}\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{=}\PYG{l+m+mi}{0}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{\PYGZlt{}}\PYG{n}{bytesRead}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{++}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{byte}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{buffer}\PYG{p}{[}\PYG{n}{i}\PYG{p}{];}
+
+\PYG{+w}{            }\PYG{k}{if}\PYG{p}{(}\PYG{n}{table}\PYG{p}{[}\PYG{n}{byte}\PYG{p}{].}\PYG{n}{length}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{                }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}
+\PYG{+w}{                }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{            }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{            }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{writeBits}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{bw}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{table}\PYG{p}{[}\PYG{n}{byte}\PYG{p}{].}\PYG{n}{bits}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{table}\PYG{p}{[}\PYG{n}{byte}\PYG{p}{].}\PYG{n}{length}\PYG{p}{);}
+\PYG{+w}{            }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{ferror}\PYG{p}{(}\PYG{n}{in}\PYG{p}{))}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}READ}\PYG{p}{;}
+\PYG{+w}{        }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{writePaddedBits}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{bw}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n+nl}{cleanup}\PYG{p}{:}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{in}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{fclose}\PYG{p}{(}\PYG{n}{in}\PYG{p}{);}
+
+\PYG{+w}{        }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{cs}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{closeBitWriter}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{bw}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{+w}{ }\PYG{o}{\PYGZam{}\PYGZam{}}\PYG{+w}{ }\PYG{n}{cs}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{cs}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{n}{free}\PYG{p}{(}\PYG{n}{buffer}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*========================== HEADER READER =========================*/}
+
+\PYG{k}{typedef}\PYG{+w}{ }\PYG{k}{struct}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{originalSize}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{uint16\PYGZus{}t}\PYG{+w}{ }\PYG{n}{nameLen}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{name}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{uint32\PYGZus{}t}\PYG{+w}{ }\PYG{n}{treeBitsLen}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}\PYG{+w}{ }\PYG{n}{HuffHeader}\PYG{p}{;}
+
+\PYG{k+kt}{void}\PYG{+w}{ }\PYG{n+nf}{freeHeader}\PYG{p}{(}\PYG{n}{HuffHeader}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{h}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{h}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{free}\PYG{p}{(}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{name}\PYG{p}{);}
+\PYG{+w}{    }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{name}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Now the encoded file is to be read and we want to get}
+\PYG{c+cm}{ * a one\PYGZhy{}to\PYGZhy{}one copy of the original file}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * First header is read in the same order like it was written}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * MAGIC BYTES WHICH IDENTIFY HUFF FILE FORMAT}
+\PYG{c+cm}{ * ORIGINAL SIZE OF THE FILE}
+\PYG{c+cm}{ * LENGTH OF ORIGINAL FILE NAME}
+\PYG{c+cm}{ * THE ORIGINAL FILE NAME}
+\PYG{c+cm}{ * THE SERIALIZED HUFFMAN TREE}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{readHeader}\PYG{p}{(}\PYG{k+kt}{FILE}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{in}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{HuffHeader}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{h}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{memset}\PYG{p}{(}\PYG{n}{h}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{sizeof}\PYG{p}{(}\PYG{o}{*}\PYG{n}{h}\PYG{p}{));}
+
+\PYG{+w}{    }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{magic}\PYG{p}{[}\PYG{l+m+mi}{8}\PYG{p}{];}
+\PYG{+w}{    }\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{magic\PYGZus{}expected}\PYG{p}{[]}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{\PYGZob{}}\PYG{l+s+sc}{\PYGZsq{}H\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}U\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}F\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}F\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}2\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}4\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}1\PYGZsq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}2\PYGZsq{}}\PYG{p}{\PYGZcb{};}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fread}\PYG{p}{(}\PYG{n}{magic}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{8}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{in}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{8}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}READ}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{memcmp}\PYG{p}{(}\PYG{n}{magic}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{magic\PYGZus{}expected}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{8}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FORMAT}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fread}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{originalSize}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{sizeof}\PYG{p}{(}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{originalSize}\PYG{p}{),}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{in}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}READ}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fread}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{nameLen}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{sizeof}\PYG{p}{(}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{nameLen}\PYG{p}{),}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{in}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}READ}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{name}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{char}\PYG{o}{*}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{malloc}\PYG{p}{((}\PYG{k+kt}{size\PYGZus{}t}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{nameLen}\PYG{+w}{ }\PYG{o}{+}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{name}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}MEMORY}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{nameLen}\PYG{+w}{ }\PYG{o}{\PYGZgt{}}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fread}\PYG{p}{(}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{name}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{nameLen}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{in}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{nameLen}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}READ}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+\PYG{+w}{    }\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{name}\PYG{p}{[}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{nameLen}\PYG{p}{]}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}\PYGZbs{}0\PYGZsq{}}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fread}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{treeBitsLen}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{sizeof}\PYG{p}{(}\PYG{n}{h}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{treeBitsLen}\PYG{p}{),}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{in}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}READ}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*======================== BIT READER ========================*/}
+
+\PYG{k}{typedef}\PYG{+w}{ }\PYG{k}{struct}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k+kt}{FILE}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{f}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{buffer}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{bitPos}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}\PYG{+w}{ }\PYG{n}{BitReader}\PYG{p}{;}
+
+\PYG{k+kt}{void}\PYG{+w}{ }\PYG{n+nf}{initBitReader}\PYG{p}{(}\PYG{n}{BitReader}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{FILE}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{br}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{f}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{br}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{br}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{bitPos}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Reads a byte from the file and flushes it in the buffer}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * Next read the buffer bit by bit and update the bits read}
+\PYG{c+cm}{ * in bitPos member of the BitReader struct}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * Bits are read in MSB first order}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{readBit}\PYG{p}{(}\PYG{n}{BitReader}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{outBit}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{br}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{bitPos}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fread}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{br}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{buffer}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{br}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}READ}\PYG{p}{;}
+\PYG{+w}{        }\PYG{n}{br}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{bitPos}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{8}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{outBit}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{br}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{\PYGZgt{}\PYGZgt{}}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{br}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{bitPos}\PYG{+w}{ }\PYG{o}{\PYGZhy{}}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{))}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{br}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{bitPos}\PYG{o}{\PYGZhy{}\PYGZhy{}}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Multiple bits are read simultaneously and stored in}
+\PYG{c+cm}{ * unsigned 64 bit integer}
+\PYG{c+cm}{ * }
+\PYG{c+cm}{ * Bits are read one at a time using readBit() and combined}
+\PYG{c+cm}{ * into final value using left shift operation}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{readBitsU64}\PYG{p}{(}\PYG{n}{BitReader}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint32\PYGZus{}t}\PYG{+w}{ }\PYG{n}{bitCount}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{outValue}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{value}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{for}\PYG{p}{(}\PYG{k+kt}{uint32\PYGZus{}t}\PYG{+w}{ }\PYG{n}{bitIdx}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{bitIdx}\PYG{+w}{ }\PYG{o}{\PYGZlt{}}\PYG{+w}{ }\PYG{n}{bitCount}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{bitIdx}\PYG{o}{++}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{bit}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{readBit}\PYG{p}{(}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{bit}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{n}{value}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{value}\PYG{+w}{ }\PYG{o}{\PYGZlt{}\PYGZlt{}}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{|}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{uint64\PYGZus{}t}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{bit}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{outValue}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{value}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+c1}{// discard remaining bits in current byte}
+\PYG{k+kt}{void}\PYG{+w}{ }\PYG{n+nf}{alignToByte}\PYG{p}{(}\PYG{n}{BitReader}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{br}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{br}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{bitPos}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*}
+\PYG{c+cm}{Reads a Huffman tree in the same preorder bit format as writeTree(), but enforces}
+\PYG{c+cm}{a hard limit: it will consume exactly treeBitsLen bits overall.}
+
+\PYG{c+cm}{bitsLeft:}
+\PYG{c+cm}{  input  = how many tree bits remain to be read}
+\PYG{c+cm}{  output = decremented as bits are consumed; should reach 0 when tree is fully read}
+\PYG{c+cm}{*/}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{readTree}\PYG{p}{(}\PYG{n}{BitReader}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint32\PYGZus{}t}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{bitsLeft}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{outNode}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{outNode}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{bitsLeft}\PYG{+w}{ }\PYG{o}{||}\PYG{+w}{ }\PYG{o}{!*}\PYG{n}{bitsLeft}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FORMAT}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{tag}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{readBit}\PYG{p}{(}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{tag}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{(}\PYG{o}{*}\PYG{n}{bitsLeft}\PYG{p}{)}\PYG{o}{\PYGZhy{}\PYGZhy{}}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{tag}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{c+c1}{// leaf: next 8 bits are byte value}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{o}{*}\PYG{n}{bitsLeft}\PYG{+w}{ }\PYG{o}{\PYGZlt{}}\PYG{+w}{ }\PYG{l+m+mi}{8}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FORMAT}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{byte}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{readBitsU64}\PYG{p}{(}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{8}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{byte}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+\PYG{+w}{        }\PYG{p}{(}\PYG{o}{*}\PYG{n}{bitsLeft}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{\PYGZhy{}=}\PYG{+w}{ }\PYG{l+m+mi}{8}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{createNode}\PYG{p}{(}\PYG{n}{outNode}\PYG{p}{,}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{uint8\PYGZus{}t}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{byte}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{,}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{,}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{c+c1}{// internal: read left subtree thn right subtree}
+\PYG{+w}{    }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{left}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{right}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{readTree}\PYG{p}{(}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{bitsLeft}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{left}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{left}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{readTree}\PYG{p}{(}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{bitsLeft}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{right}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{left}\PYG{p}{);}
+\PYG{+w}{        }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{right}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{createNode}\PYG{p}{(}\PYG{n}{outNode}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{left}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{right}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{left}\PYG{p}{);}
+\PYG{+w}{        }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{right}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*======================== DECODER ==========================*/}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Flush count bits into the output file}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{flushBuffer}\PYG{p}{(}\PYG{k+kt}{FILE}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{out}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{buffer}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{count}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{*}\PYG{n}{count}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fwrite}\PYG{p}{(}\PYG{n}{buffer}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{count}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{out}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{count}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}WRITE}\PYG{p}{;}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{count}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Handles the edge case first}
+\PYG{c+cm}{ * if the file contained only one unique byte then it is written}
+\PYG{c+cm}{ * with that byte until original size bytes are written}
+\PYG{c+cm}{ * }
+\PYG{c+cm}{ * Bits are read from the file and are used to traverse the tree}
+\PYG{c+cm}{ * until a leaf node is encountered whose bytes are then first stored}
+\PYG{c+cm}{ * in a buffer and then flushed to output file when buffer is full}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * This operation continues till original size bytes are written}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{decodePayload}\PYG{p}{(}\PYG{n}{BitReader}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{FILE}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{out}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{const}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{root}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{originalSize}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{root}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FORMAT}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{outCount}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{buffer}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{uint8\PYGZus{}t}\PYG{o}{*}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{malloc}\PYG{p}{(}\PYG{n}{BUFFER\PYGZus{}SIZE}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{buffer}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}MEMORY}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{c+c1}{// special case: single byte}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{left}\PYG{+w}{ }\PYG{o}{\PYGZam{}\PYGZam{}}\PYG{+w}{ }\PYG{o}{!}\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{right}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{for}\PYG{p}{(}\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{=}\PYG{l+m+mi}{0}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{\PYGZlt{}}\PYG{n}{originalSize}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{++}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{n}{buffer}\PYG{p}{[}\PYG{n}{outCount}\PYG{o}{++}\PYG{p}{]}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{root}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{byte}\PYG{p}{;}
+
+\PYG{+w}{            }\PYG{k}{if}\PYG{p}{(}\PYG{n}{outCount}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{n}{BUFFER\PYGZus{}SIZE}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{                }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{flushBuffer}\PYG{p}{(}\PYG{n}{out}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{buffer}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{outCount}\PYG{p}{);}
+\PYG{+w}{                }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{            }\PYG{p}{\PYGZcb{}}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{flushBuffer}\PYG{p}{(}\PYG{n}{out}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{buffer}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{outCount}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{+w}{        }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{written}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{const}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{curr}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{root}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{while}\PYG{p}{(}\PYG{n}{written}\PYG{+w}{ }\PYG{o}{\PYGZlt{}}\PYG{+w}{ }\PYG{n}{originalSize}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{bit}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{readBit}\PYG{p}{(}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{bit}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{n}{curr}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{bit}\PYG{+w}{ }\PYG{o}{?}\PYG{+w}{ }\PYG{n}{curr}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{right}\PYG{+w}{ }\PYG{o}{:}\PYG{+w}{ }\PYG{n}{curr}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{left}\PYG{p}{;}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{curr}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FORMAT}\PYG{p}{;}
+\PYG{+w}{            }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{curr}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{left}\PYG{+w}{ }\PYG{o}{\PYGZam{}\PYGZam{}}\PYG{+w}{ }\PYG{o}{!}\PYG{+w}{ }\PYG{n}{curr}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{right}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{n}{buffer}\PYG{p}{[}\PYG{n}{outCount}\PYG{o}{++}\PYG{p}{]}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{curr}\PYG{o}{\PYGZhy{}\PYGZgt{}}\PYG{n}{byte}\PYG{p}{;}
+\PYG{+w}{            }\PYG{n}{written}\PYG{o}{++}\PYG{p}{;}
+\PYG{+w}{            }\PYG{n}{curr}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{root}\PYG{p}{;}
+
+\PYG{+w}{            }\PYG{k}{if}\PYG{p}{(}\PYG{n}{outCount}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{n}{BUFFER\PYGZus{}SIZE}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{                }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{flushBuffer}\PYG{p}{(}\PYG{n}{out}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{buffer}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{outCount}\PYG{p}{);}
+\PYG{+w}{                }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{            }\PYG{p}{\PYGZcb{}}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{flushBuffer}\PYG{p}{(}\PYG{n}{out}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{buffer}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{outCount}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n+nl}{cleanup}\PYG{p}{:}
+\PYG{+w}{        }\PYG{n}{free}\PYG{p}{(}\PYG{n}{buffer}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*======================== UTILITIES ========================*/}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Cleanup function to provide a single path for the program}
+\PYG{c+cm}{ * to terminate in case of an error or successful run}
+\PYG{c+cm}{ * */}
+
+\PYG{k+kt}{void}\PYG{+w}{ }\PYG{n+nf}{cleanupAll}\PYG{p}{(}\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{freq}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{MinHeap}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{h}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{root}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{Code}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{table}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{outName}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{free}\PYG{p}{(}\PYG{n}{freq}\PYG{p}{);}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{root}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{root}\PYG{p}{);}\PYG{+w}{        }\PYG{c+c1}{// frees all nodes}
+\PYG{+w}{        }\PYG{n}{destroyHeapStruct}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{h}\PYG{p}{);}\PYG{+w}{  }\PYG{c+c1}{// heap contains stale pointers, but only struct is freed}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}\PYG{+w}{ }
+
+\PYG{+w}{    }\PYG{k}{else}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{destroyHeapWithNodes}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{h}\PYG{p}{);}\PYG{+w}{ }\PYG{c+c1}{// frees nodes when tree not formed}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{free}\PYG{p}{(}\PYG{n}{table}\PYG{p}{);}
+\PYG{+w}{    }\PYG{n}{free}\PYG{p}{(}\PYG{n}{outName}\PYG{p}{);}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{k+kt}{void}\PYG{+w}{ }\PYG{n+nf}{printCodes}\PYG{p}{(}\PYG{k}{const}\PYG{+w}{ }\PYG{n}{Code}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{table}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k}{for}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{int}\PYG{+w}{ }\PYG{n}{byte}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{byte}\PYG{+w}{ }\PYG{o}{\PYGZlt{}}\PYG{+w}{ }\PYG{l+m+mi}{256}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{byte}\PYG{o}{++}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{if}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{table}\PYG{p}{[}\PYG{n}{byte}\PYG{p}{].}\PYG{n}{length}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{continue}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{n}{printf}\PYG{p}{(}\PYG{l+s}{\PYGZdq{}\PYGZpc{}c: \PYGZdq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{byte}\PYG{p}{);}
+
+\PYG{+w}{        }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{bits}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{table}\PYG{p}{[}\PYG{n}{byte}\PYG{p}{].}\PYG{n}{bits}\PYG{p}{;}
+\PYG{+w}{        }\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{length}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{table}\PYG{p}{[}\PYG{n}{byte}\PYG{p}{].}\PYG{n}{length}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k}{for}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{uint8\PYGZus{}t}\PYG{+w}{ }\PYG{n}{i}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{length}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{+w}{ }\PYG{o}{\PYGZgt{}}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{i}\PYG{o}{\PYGZhy{}\PYGZhy{}}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{n}{putchar}\PYG{p}{(((}\PYG{n}{bits}\PYG{+w}{ }\PYG{o}{\PYGZgt{}\PYGZgt{}}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{i}\PYG{+w}{ }\PYG{o}{\PYGZhy{}}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{))}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{?}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}1\PYGZsq{}}\PYG{+w}{ }\PYG{o}{:}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}0\PYGZsq{}}\PYG{p}{);}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{        }\PYG{n}{putchar}\PYG{p}{(}\PYG{l+s+sc}{\PYGZsq{}\PYGZbs{}n\PYGZsq{}}\PYG{p}{);}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Helper function to print the status codes in case of an error}
+\PYG{c+cm}{ * or SUCCESS}
+\PYG{c+cm}{ * */}
+
+\PYG{k+kt}{void}\PYG{+w}{ }\PYG{n+nf}{printStatus}\PYG{p}{(}\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{testName}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}\PYGZpc{}s: \PYGZdq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{testName}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{switch}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{s}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{case}\PYG{+w}{ }\PYG{n+no}{SUCCESS}\PYG{p}{:}
+\PYG{+w}{        }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}[SUCCESS]}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{break}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k}{case}\PYG{+w}{ }\PYG{n+no}{ERR\PYGZus{}FILE}\PYG{p}{:}
+\PYG{+w}{        }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}[ERR\PYGZus{}FILE]}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{break}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k}{case}\PYG{+w}{ }\PYG{n+no}{ERR\PYGZus{}MEMORY}\PYG{p}{:}
+\PYG{+w}{        }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}[ERR\PYGZus{}MEMORY]}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{break}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k}{case}\PYG{+w}{ }\PYG{n+no}{ERR\PYGZus{}READ}\PYG{p}{:}
+\PYG{+w}{        }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}[ERR\PYGZus{}READ]}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{break}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k}{case}\PYG{+w}{ }\PYG{n+no}{ERR\PYGZus{}RECURSION\PYGZus{}DEPTH}\PYG{p}{:}
+\PYG{+w}{        }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}[ERR\PYGZus{}RECURSION\PYGZus{}DEPTH]}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{break}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k}{case}\PYG{+w}{ }\PYG{n+no}{ERR\PYGZus{}HEAP\PYGZus{}CAPACITY\PYGZus{}FULL}\PYG{p}{:}
+\PYG{+w}{        }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}[ERR\PYGZus{}HEAP\PYGZus{}CAPACITY\PYGZus{}FULL]}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{break}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k}{case}\PYG{+w}{ }\PYG{n+no}{ERR\PYGZus{}WRITE}\PYG{p}{:}
+\PYG{+w}{        }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}[ERR\PYGZus{}WRITE]}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{break}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k}{case}\PYG{+w}{ }\PYG{n+no}{ERR\PYGZus{}FORMAT}\PYG{p}{:}
+\PYG{+w}{        }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}[ERR\PYGZus{}FORMAT]}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{break}\PYG{p}{;}
+
+\PYG{+w}{        }\PYG{k}{case}\PYG{+w}{ }\PYG{n+no}{ERR\PYGZus{}ABORTED}\PYG{p}{:}
+\PYG{+w}{        }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}[ERR\PYGZus{}ABORTED]}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{break}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Helper function to generate the output name for the encoded file}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{makeOutputName}\PYG{p}{(}\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{outName}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{inputPath}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{outName}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{base}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{baseName}\PYG{p}{(}\PYG{n}{inputPath}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{ext}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}.huff\PYGZdq{}}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{baseLen}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{strlen}\PYG{p}{(}\PYG{n}{base}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k+kt}{size\PYGZus{}t}\PYG{+w}{ }\PYG{n}{extLen}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{strlen}\PYG{p}{(}\PYG{n}{ext}\PYG{p}{);}
+
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{outName}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{k+kt}{char}\PYG{o}{*}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{malloc}\PYG{p}{(}\PYG{n}{baseLen}\PYG{+w}{ }\PYG{o}{+}\PYG{+w}{ }\PYG{n}{extLen}\PYG{+w}{ }\PYG{o}{+}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!*}\PYG{n}{outName}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}MEMORY}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{memcpy}\PYG{p}{(}\PYG{o}{*}\PYG{n}{outName}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{base}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{baseLen}\PYG{p}{);}
+\PYG{+w}{    }\PYG{n}{memcpy}\PYG{p}{(}\PYG{o}{*}\PYG{n}{outName}\PYG{+w}{ }\PYG{o}{+}\PYG{+w}{ }\PYG{n}{baseLen}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{ext}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{extLen}\PYG{p}{);}
+\PYG{+w}{    }\PYG{p}{(}\PYG{o}{*}\PYG{n}{outName}\PYG{p}{)[}\PYG{n}{baseLen}\PYG{+w}{ }\PYG{o}{+}\PYG{+w}{ }\PYG{n}{extLen}\PYG{p}{]}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}\PYGZbs{}0\PYGZsq{}}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*==================== CMDLINE ARGS PARSING ======================*/}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * Helper functions to process the command line arguments and }
+\PYG{c+cm}{ * handle the case where the file already exists in the current directory}
+\PYG{c+cm}{ * */}
+
+\PYG{k}{typedef}\PYG{+w}{ }\PYG{k}{enum}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{NONE}\PYG{p}{,}
+\PYG{+w}{    }\PYG{n}{COMPRESS}\PYG{p}{,}
+\PYG{+w}{    }\PYG{n}{DECOMPRESS}
+\PYG{p}{\PYGZcb{}}\PYG{+w}{ }\PYG{n}{Mode}\PYG{p}{;}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{parseArgs}\PYG{p}{(}\PYG{k+kt}{int}\PYG{+w}{ }\PYG{n}{argc}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{argv}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{Mode}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{mode}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{inputPath}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{mode}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{NONE}\PYG{p}{;}
+\PYG{+w}{    }\PYG{o}{*}\PYG{n}{inputPath}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{argc}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{3}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{strcmp}\PYG{p}{(}\PYG{n}{argv}\PYG{p}{[}\PYG{l+m+mi}{1}\PYG{p}{],}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}\PYGZhy{}c\PYGZdq{}}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{o}{*}\PYG{n}{mode}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{COMPRESS}\PYG{p}{;}
+\PYG{+w}{        }\PYG{o}{*}\PYG{n}{inputPath}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{argv}\PYG{p}{[}\PYG{l+m+mi}{2}\PYG{p}{];}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{else}\PYG{+w}{ }\PYG{k}{if}\PYG{p}{(}\PYG{n}{strcmp}\PYG{p}{(}\PYG{n}{argv}\PYG{p}{[}\PYG{l+m+mi}{1}\PYG{p}{],}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}\PYGZhy{}x\PYGZdq{}}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{o}{*}\PYG{n}{mode}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{DECOMPRESS}\PYG{p}{;}
+\PYG{+w}{        }\PYG{o}{*}\PYG{n}{inputPath}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{argv}\PYG{p}{[}\PYG{l+m+mi}{2}\PYG{p}{];}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{k+kt}{char}\PYG{+w}{ }\PYG{n+nf}{fileExists}\PYG{p}{(}\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{path}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{k+kt}{FILE}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{f}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{fopen}\PYG{p}{(}\PYG{n}{path}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}rb\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{f}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{fclose}\PYG{p}{(}\PYG{n}{f}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{k+kt}{int}\PYG{+w}{ }\PYG{n+nf}{promptOverwrite}\PYG{p}{(}\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{path}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}File \PYGZsq{}\PYGZpc{}s\PYGZsq{} already exists. Overwrite? [y/N]: \PYGZdq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{path}\PYG{p}{);}
+\PYG{+w}{    }\PYG{n}{fflush}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{);}
+
+\PYG{+w}{    }\PYG{k+kt}{int}\PYG{+w}{ }\PYG{n}{c}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{getchar}\PYG{p}{();}
+\PYG{+w}{    }\PYG{k}{while}\PYG{p}{(}\PYG{n}{c}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}\PYGZbs{}n\PYGZsq{}}\PYG{+w}{ }\PYG{o}{\PYGZam{}\PYGZam{}}\PYG{+w}{ }\PYG{n}{c}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{EOF}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k+kt}{int}\PYG{+w}{ }\PYG{n}{d}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{getchar}\PYG{p}{();}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{d}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}\PYGZbs{}n\PYGZsq{}}\PYG{+w}{ }\PYG{o}{||}\PYG{+w}{ }\PYG{n}{d}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{n}{EOF}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{break}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{c}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}y\PYGZsq{}}\PYG{+w}{ }\PYG{o}{||}\PYG{+w}{ }\PYG{n}{c}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+s+sc}{\PYGZsq{}Y\PYGZsq{}}\PYG{p}{);}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*=================== HIGH\PYGZhy{}LEVEL FILE OPS ===================*/}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * These are high\PYGZhy{}level wrapper functions that just call the necessary functions}
+\PYG{c+cm}{ * in order to achieve the desired task}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * First the file is read to make the freq table and get the total bytes}
+\PYG{c+cm}{ * then the heap is built}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * Huffman tree is generated using heap}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * Table to store the huffman codes is initialized and}
+\PYG{c+cm}{ * huffman codes are produced by traversing the tree}
+\PYG{c+cm}{ * built in the previous steps}
+\PYG{c+cm}{ *}
+\PYG{c+cm}{ * The file is then encoded by the encoder pipeline}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{compressFile}\PYG{p}{(}\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{inputPath}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{freq}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{MinHeap}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{heap}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{root}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{uint64\PYGZus{}t}\PYG{+w}{ }\PYG{n}{totalBytes}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{Code}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{table}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{outName}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{readFile}\PYG{p}{(}\PYG{n}{inputPath}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{freq}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{totalBytes}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{totalBytes}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}\PYG{+w}{ }\PYG{c+c1}{// or ERR\PYGZus{}FORMAT if you prefer}
+\PYG{+w}{        }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{buildHeap}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{heap}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{freq}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{buildHuffmanTree}\PYG{p}{(}\PYG{n}{heap}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{root}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{initTable}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{table}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{buildCodes}\PYG{p}{(}\PYG{n}{root}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{table}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{makeOutputName}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{outName}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{inputPath}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{encodeFile}\PYG{p}{(}\PYG{n}{inputPath}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{outName}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{table}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{totalBytes}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{root}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{printf}\PYG{p}{(}\PYG{l+s}{\PYGZdq{}Original File Size: \PYGZpc{}\PYGZdq{}}\PYG{+w}{ }\PYG{n}{PRIu64}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{} Bytes}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{totalBytes}\PYG{p}{);}
+\PYG{+w}{    }\PYG{n}{printf}\PYG{p}{(}\PYG{l+s}{\PYGZdq{}Wrote Compressed File: \PYGZpc{}s}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{outName}\PYG{p}{);}
+
+\PYG{+w}{    }\PYG{n+nl}{cleanup}\PYG{p}{:}
+\PYG{+w}{        }\PYG{n}{cleanupAll}\PYG{p}{(}\PYG{n}{freq}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{heap}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{root}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{table}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{outName}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/**}
+\PYG{c+cm}{ * First the header is read}
+\PYG{c+cm}{ * Then the actual bits are read and converted to the}
+\PYG{c+cm}{ * original file}
+\PYG{c+cm}{ * */}
+
+\PYG{n}{Status}\PYG{+w}{ }\PYG{n+nf}{decodeFile}\PYG{p}{(}\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{inHuffPath}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{FILE}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{in}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k+kt}{FILE}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{out}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{HuffHeader}\PYG{+w}{ }\PYG{n}{header}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{memset}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{header}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{,}\PYG{+w}{ }\PYG{k}{sizeof}\PYG{p}{(}\PYG{n}{header}\PYG{p}{));}
+
+\PYG{+w}{    }\PYG{n}{Node}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{root}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{in}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{fopen}\PYG{p}{(}\PYG{n}{inHuffPath}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}rb\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{in}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}
+\PYG{+w}{        }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{readHeader}\PYG{p}{(}\PYG{n}{in}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{header}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{header}\PYG{p}{.}\PYG{n}{treeBitsLen}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FORMAT}\PYG{p}{;}
+\PYG{+w}{        }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{fileExists}\PYG{p}{(}\PYG{n}{header}\PYG{p}{.}\PYG{n}{name}\PYG{p}{))}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{promptOverwrite}\PYG{p}{(}\PYG{n}{header}\PYG{p}{.}\PYG{n}{name}\PYG{p}{))}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{            }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}ABORTED}\PYG{p}{;}
+\PYG{+w}{            }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{        }\PYG{p}{\PYGZcb{}}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{out}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{fopen}\PYG{p}{(}\PYG{n}{header}\PYG{p}{.}\PYG{n}{name}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}wb\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{o}{!}\PYG{n}{out}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FILE}\PYG{p}{;}
+\PYG{+w}{        }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{BitReader}\PYG{+w}{ }\PYG{n}{br}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{initBitReader}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{in}\PYG{p}{);}
+
+\PYG{+w}{    }\PYG{k+kt}{uint32\PYGZus{}t}\PYG{+w}{ }\PYG{n}{bitsLeft}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{header}\PYG{p}{.}\PYG{n}{treeBitsLen}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{readTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{bitsLeft}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{root}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{bitsLeft}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{ERR\PYGZus{}FORMAT}\PYG{p}{;}
+\PYG{+w}{        }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{n}{alignToByte}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{br}\PYG{p}{);}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{decodePayload}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{br}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{out}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{root}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{header}\PYG{p}{.}\PYG{n}{originalSize}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{goto}\PYG{+w}{ }\PYG{n}{cleanup}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{printf}\PYG{p}{(}\PYG{l+s}{\PYGZdq{}Original File Size: \PYGZpc{}\PYGZdq{}}\PYG{+w}{ }\PYG{n}{PRIu64}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{} Bytes}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{header}\PYG{p}{.}\PYG{n}{originalSize}\PYG{p}{);}
+\PYG{+w}{    }\PYG{n}{printf}\PYG{p}{(}\PYG{l+s}{\PYGZdq{}Wrote Decoded File: \PYGZpc{}s}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{header}\PYG{p}{.}\PYG{n}{name}\PYG{p}{);}
+
+\PYG{+w}{    }\PYG{n+nl}{cleanup}\PYG{p}{:}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{out}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{fclose}\PYG{p}{(}\PYG{n}{out}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{if}\PYG{p}{(}\PYG{n}{in}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{fclose}\PYG{p}{(}\PYG{n}{in}\PYG{p}{);}
+\PYG{+w}{        }\PYG{n}{freeTree}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{root}\PYG{p}{);}
+\PYG{+w}{        }\PYG{n}{freeHeader}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{header}\PYG{p}{);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+
+\PYG{c+cm}{/*============================ MAIN ============================*/}
+
+\PYG{k+kt}{int}\PYG{+w}{ }\PYG{n+nf}{main}\PYG{p}{(}\PYG{k+kt}{int}\PYG{+w}{ }\PYG{n}{argc}\PYG{p}{,}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{**}\PYG{n}{argv}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n}{Mode}\PYG{+w}{ }\PYG{n}{mode}\PYG{p}{;}
+\PYG{+w}{    }\PYG{k}{const}\PYG{+w}{ }\PYG{k+kt}{char}\PYG{+w}{ }\PYG{o}{*}\PYG{n}{inputPath}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nb}{NULL}\PYG{p}{;}
+\PYG{+w}{    }\PYG{n}{Status}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{;}
+
+\PYG{+w}{    }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{parseArgs}\PYG{p}{(}\PYG{n}{argc}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{argv}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{mode}\PYG{p}{,}\PYG{+w}{ }\PYG{o}{\PYGZam{}}\PYG{n}{inputPath}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{+w}{ }\PYG{o}{||}\PYG{+w}{ }\PYG{n}{mode}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{n}{NONE}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}Usage:}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{);}
+\PYG{+w}{        }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}  \PYGZpc{}s \PYGZhy{}c \PYGZlt{}input\PYGZus{}file\PYGZgt{}    (compress)}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{argv}\PYG{p}{[}\PYG{l+m+mi}{0}\PYG{p}{]);}
+\PYG{+w}{        }\PYG{n}{fprintf}\PYG{p}{(}\PYG{n}{stderr}\PYG{p}{,}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}  \PYGZpc{}s \PYGZhy{}x \PYGZlt{}input\PYGZus{}file\PYGZgt{}    (decompress)}\PYG{l+s+se}{\PYGZbs{}n}\PYG{l+s}{\PYGZdq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{argv}\PYG{p}{[}\PYG{l+m+mi}{0}\PYG{p}{]);}
+\PYG{+w}{        }\PYG{k}{return}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{;}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{mode}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{n}{COMPRESS}\PYG{p}{)}\PYG{+w}{ }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{compressFile}\PYG{p}{(}\PYG{n}{inputPath}\PYG{p}{);}
+\PYG{+w}{    }\PYG{k}{else}\PYG{+w}{ }\PYG{n}{s}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{decodeFile}\PYG{p}{(}\PYG{n}{inputPath}\PYG{p}{);}
+
+\PYG{+w}{    }\PYG{k}{if}\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{!=}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{        }\PYG{n}{printStatus}\PYG{p}{(}\PYG{l+s}{\PYGZdq{}ERROR\PYGZdq{}}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{s}\PYG{p}{);}
+\PYG{+w}{    }\PYG{p}{\PYGZcb{}}
+
+\PYG{+w}{    }\PYG{k}{return}\PYG{+w}{ }\PYG{p}{(}\PYG{n}{s}\PYG{+w}{ }\PYG{o}{==}\PYG{+w}{ }\PYG{n}{SUCCESS}\PYG{p}{)}\PYG{+w}{ }\PYG{o}{?}\PYG{+w}{ }\PYG{l+m+mi}{0}\PYG{+w}{ }\PYG{o}{:}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{;}
+\PYG{p}{\PYGZcb{}}
+\end{MintedVerbatim}
